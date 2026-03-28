@@ -5,11 +5,11 @@ import { MLB_TEAMS } from '@/lib/mlb-data';
 // GET - Obtener todos los equipos MLB
 export async function GET() {
   try {
-    let teams = await db.mLBTTeam.findMany();
+    let teams = await db.mLBTeam.findMany();
     
     // Si no hay equipos, crearlos
     if (teams.length === 0) {
-      await db.mLBTTeam.createMany({
+      await db.mLBTeam.createMany({
         data: MLB_TEAMS.map(team => ({
           name: team.name,
           shortName: team.shortName,
@@ -20,7 +20,7 @@ export async function GET() {
           losses: team.losses,
         }))
       });
-      teams = await db.mLBTTeam.findMany();
+      teams = await db.mLBTeam.findMany();
     }
     
     return NextResponse.json(teams);
