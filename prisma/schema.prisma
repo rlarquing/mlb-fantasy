@@ -1,0 +1,233 @@
+// MLB Fantasy - Esquema de base de datos
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Usuario del juego
+model User {
+  id          String   @id @default(cuid())
+  name        String
+  email       String   @unique
+  avatar      String?
+  totalPoints Int      @default(0)
+  balance     Int      @default(100000000) // 100 millones de pesos para fichajes
+  role        String   @default("user") // admin, user
+  status      String   @default("active") // active, banned, suspended
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  predictions      Prediction[]
+  sentMessages     Message[]  @relation("SentMessages")
+  receivedMessages Message[]  @relation("ReceivedMessages")
+  activityLogs     ActivityLog[]
+  notifications    Notification[]
+  reportsMade      Report[]   @relation("UserReports")
+  reportsReceived  Report[]   @relation("UserReported")
+  cheatAlerts      CheatAlert[] @relation("UserCheatAlerts")
+  signings         Signing[]
+}
+
+// Equipos de MLB
+model MLBTTeam {
+  id          String   @id @default(cuid())
+  name        String   // Nombre completo
+  shortName   String   // Abreviatura (NYY, BOS, LAD, etc.)
+  city        String   // Ciudad
+  logo        String   // URL del logo
+  division    String   // División (AL East, NL West, etc.)
+  wins        Int      @default(0)
+  losses      Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  homeGames   Game[]   @relation("HomeTeam")
+  awayGames   Game[]   @relation("AwayTeam")
+}
+
+// Partidos
+model Game {
+  id              String   @id @default(cuid())
+  homeTeamId      String
+  awayTeamId      String
+  gameDate        DateTime
+  stadium         String?
+  homeScore       Int?
+  awayScore       Int?
+  status          String   @default("scheduled") // scheduled, live, finished
+  winnerId        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  homeTeam        MLBTTeam @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam        MLBTTeam @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  predictions     Prediction[]
+}
+
+// Predicciones de los usuarios
+model Prediction {
+  id           String   @id @default(cuid())
+  userId       String
+  gameId       String
+  predictedWinnerId String
+  predictedHomeScore Int?
+  predictedAwayScore Int?
+  points       Int      @default(0)
+  isCorrect    Boolean?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  user         User     @relation(fields: [userId], references: [id])
+  game         Game     @relation(fields: [gameId], references: [id])
+}
+
+// Jugadores MLB (para estadísticas y fichajes)
+model Player {
+  id          String   @id @default(cuid())
+  name        String
+  teamId      String?
+  position    String   // P, C, 1B, 2B, 3B, SS, OF
+  number      Int?
+  photo       String?
+  avg         Float?   // Promedio de bateo
+  hr          Int      @default(0)  // Home runs
+  rbi         Int      @default(0)  // Runs batted in
+  era         Float?   // Earned run average (para pitchers)
+  wins        Int      @default(0)
+  losses      Int      @default(0)
+  
+  // Sistema de fichajes
+  price       Int      @default(5000000)  // Precio en pesos (5 millones por defecto)
+  isStar      Boolean  @default(false)    // Jugador estrella (más caro)
+  isFree      Boolean  @default(true)     // Disponible para fichar
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  signings    Signing[]
+}
+
+// Fichajes de jugadores por usuarios
+model Signing {
+  id          String   @id @default(cuid())
+  userId      String
+  playerId    String
+  price       Int      // Precio al momento del fichaje
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id])
+  player      Player   @relation(fields: [playerId], references: [id])
+  
+  @@unique([userId, playerId]) // Un usuario solo puede fichar un jugador una vez
+}
+
+// Chat - Salas de chat
+model ChatRoom {
+  id          String   @id @default(cuid())
+  name        String
+  type        String   @default("public") // public, private, game
+  gameId      String?  // Si es chat de un partido específico
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  messages    Message[]
+}
+
+// Chat - Mensajes
+model Message {
+  id          String   @id @default(cuid())
+  content     String
+  senderId    String
+  receiverId  String?  // null para mensajes públicos
+  roomId      String?
+  createdAt   DateTime @default(now())
+  
+  sender      User     @relation("SentMessages", fields: [senderId], references: [id])
+  receiver    User?    @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  room        ChatRoom? @relation(fields: [roomId], references: [id])
+}
+
+// Logs de actividad de usuarios
+model ActivityLog {
+  id          String   @id @default(cuid())
+  userId      String
+  action      String   // login, prediction, message, etc.
+  details     String?  // JSON con detalles de la acción
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+// Configuración del juego
+model GameConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+// Anuncios del administrador
+model Announcement {
+  id          String   @id @default(cuid())
+  title       String
+  content     String
+  type        String   @default("info") // info, warning, important
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Notificaciones para usuarios
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String   // cheat_detected, report_received, warning, info, private_message
+  title       String
+  message     String
+  data        String?  // JSON con datos adicionales
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+// Reportes de usuarios
+model Report {
+  id              String   @id @default(cuid())
+  reporterId      String   // Quién hace el reporte
+  reportedUserId  String   // Usuario reportado
+  reason          String   // cheating, spam, harassment, other
+  description     String?  // Descripción detallada
+  status          String   @default("pending") // pending, reviewed, resolved, dismissed
+  reviewedBy      String?  // ID del admin que revisó
+  reviewedAt      DateTime?
+  resolution      String?  // Nota de resolución
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  reporter        User     @relation("UserReports", fields: [reporterId], references: [id])
+  reportedUser    User     @relation("UserReported", fields: [reportedUserId], references: [id])
+}
+
+// Alertas de trampas detectadas automáticamente
+model CheatAlert {
+  id              String   @id @default(cuid())
+  userId          String   // Usuario sospechoso
+  type            String   // rapid_predictions, score_manipulation, multiple_accounts, unusual_pattern
+  severity        String   @default("medium") // low, medium, high, critical
+  description     String
+  data            String?  // JSON con evidencia/datos
+  resolved        Boolean  @default(false)
+  resolvedBy      String?
+  resolvedAt      DateTime?
+  createdAt       DateTime @default(now())
+  
+  user            User     @relation("UserCheatAlerts", fields: [userId], references: [id])
+}
