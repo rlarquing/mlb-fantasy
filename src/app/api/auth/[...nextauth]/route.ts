@@ -7,51 +7,50 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@mlbfantasy.com'
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    // Google OAuth Provider
+    // Google OAuth Provider - Solo para usuarios regulares
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+      allowDangerousEmailAccountLinking: true,
     }),
-    // Development Fallback - Credentials Provider
+    
+    // Credentials Provider - SOLO para el administrador
     CredentialsProvider({
-      id: 'dev-login',
-      name: 'Dev Login',
+      id: 'admin-credentials',
+      name: 'Admin',
       credentials: {
-        email: { label: 'Email', type: 'email', placeholder: 'user@example.com' },
-        name: { label: 'Name', type: 'text', placeholder: 'Tu nombre' },
+        email: { label: 'Email', type: 'email', placeholder: 'admin@mlbfantasy.com' },
+        password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
         if (!credentials?.email) return null
         
-        // Check if this is the admin email
-        const isAdmin = credentials.email === ADMIN_EMAIL
+        // Verificar que es el admin
+        if (credentials.email !== ADMIN_EMAIL) {
+          throw new Error('Solo el administrador puede usar credenciales')
+        }
         
-        // Find or create user
+        // Buscar o crear admin
         let user = await db.user.findUnique({
           where: { email: credentials.email }
         })
         
         if (!user) {
-          // Check if this is the first user (will be admin)
-          const userCount = await db.user.count()
-          const shouldBeAdmin = isAdmin || userCount === 0
-          
           user = await db.user.create({
             data: {
               email: credentials.email,
-              name: credentials.name || credentials.email.split('@')[0],
-              role: shouldBeAdmin ? 'admin' : 'user',
-              isAdmin: shouldBeAdmin,
-              status: shouldBeAdmin ? 'active' : 'pending',
-              paymentStatus: shouldBeAdmin ? 'paid' : 'unpaid',
-              balance: 100000000, // 100 million pesos
+              name: 'Administrador',
+              role: 'admin',
+              status: 'active',
+              paymentStatus: 'paid',
+              balance: 100000000,
+              lastPaymentDate: new Date(),
             }
           })
         }
         
-        // Check if user is banned
         if (user.status === 'banned') {
-          throw new Error('Tu cuenta ha sido baneada')
+          throw new Error('Tu cuenta ha sido suspendida')
         }
         
         return {
@@ -59,46 +58,91 @@ export const authOptions: NextAuthOptions = {
           email: user.email,
           name: user.name,
           role: user.role,
-          image: user.image,
+          image: user.image || user.avatar,
         }
       }
-    })
+    }),
+    
+    // Development fallback - solo en desarrollo
+    ...(process.env.NODE_ENV === 'development' ? [
+      CredentialsProvider({
+        id: 'dev-login',
+        name: 'Dev Login',
+        credentials: {
+          email: { label: 'Email', type: 'email', placeholder: 'user@example.com' },
+          name: { label: 'Name', type: 'text', placeholder: 'Tu nombre' },
+        },
+        async authorize(credentials) {
+          if (!credentials?.email) return null
+          
+          // En desarrollo, el admin puede usar dev login
+          const isAdmin = credentials.email === ADMIN_EMAIL
+          
+          let user = await db.user.findUnique({
+            where: { email: credentials.email }
+          })
+          
+          if (!user) {
+            user = await db.user.create({
+              data: {
+                email: credentials.email,
+                name: credentials.name || credentials.email.split('@')[0],
+                role: isAdmin ? 'admin' : 'user',
+                status: isAdmin ? 'active' : 'pending',
+                paymentStatus: isAdmin ? 'paid' : 'unpaid',
+                balance: 100000000,
+              }
+            })
+          }
+          
+          if (user.status === 'banned' || user.status === 'expelled') {
+            throw new Error('Tu cuenta ha sido suspendida o expulsada')
+          }
+          
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            image: user.image || user.avatar,
+          }
+        }
+      })
+    ] : []),
   ],
   callbacks: {
     async signIn({ user, account }) {
+      // Si es Google OAuth
       if (account?.provider === 'google') {
         const isAdmin = user.email === ADMIN_EMAIL
         
-        // Find or create user in database
         let dbUser = await db.user.findUnique({
           where: { email: user.email! }
         })
         
         if (!dbUser) {
-          const userCount = await db.user.count()
-          const shouldBeAdmin = isAdmin || userCount === 0
-          
+          // Crear nuevo usuario - NUNCA admin (solo el email específico)
           dbUser = await db.user.create({
             data: {
               email: user.email!,
               name: user.name || user.email!.split('@')[0],
               googleId: account.providerAccountId,
               image: user.image,
-              role: shouldBeAdmin ? 'admin' : 'user',
-              isAdmin: shouldBeAdmin,
-              status: shouldBeAdmin ? 'active' : 'pending',
-              paymentStatus: shouldBeAdmin ? 'paid' : 'unpaid',
+              avatar: user.image,
+              role: isAdmin ? 'admin' : 'user',
+              status: isAdmin ? 'active' : 'pending',
+              paymentStatus: isAdmin ? 'paid' : 'unpaid',
               balance: 100000000,
             }
           })
         }
         
-        // Check if banned
-        if (dbUser.status === 'banned') {
+        // Verificar estado
+        if (dbUser.status === 'banned' || dbUser.status === 'expelled') {
           return false
         }
         
-        // Update googleId if not set
+        // Actualizar googleId si no existe
         if (!dbUser.googleId) {
           await db.user.update({
             where: { id: dbUser.id },
@@ -111,12 +155,12 @@ export const authOptions: NextAuthOptions = {
       }
       return true
     },
+    
     async jwt({ token, user, account }) {
       if (user) {
         token.id = user.id
         token.role = user.role
         
-        // Get fresh user data from DB
         const dbUser = await db.user.findUnique({
           where: { email: user.email! }
         })
@@ -132,6 +176,7 @@ export const authOptions: NextAuthOptions = {
       }
       return token
     },
+    
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id as string
@@ -150,7 +195,7 @@ export const authOptions: NextAuthOptions = {
   },
   session: {
     strategy: 'jwt',
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 30 * 24 * 60 * 60,
   },
   secret: process.env.NEXTAUTH_SECRET,
   debug: process.env.NODE_ENV === 'development',

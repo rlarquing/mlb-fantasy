@@ -18,7 +18,9 @@ export async function GET(request: Request) {
     const league = await db.league.findFirst({
       where: leagueId ? { id: leagueId } : { isActive: true },
       include: {
-        pointRules: true,
+        pointRules: {
+          where: { active: true }
+        },
         _count: {
           select: { members: true }
         }
@@ -26,38 +28,67 @@ export async function GET(request: Request) {
     })
 
     if (!league) {
+      // Crear liga por defecto si no existe
+      const adminUser = await db.user.findFirst({
+        where: { role: 'admin' }
+      })
+      
+      if (adminUser) {
+        const newLeague = await db.league.create({
+          data: {
+            name: 'MLB Fantasy Liga',
+            description: 'Liga principal de MLB Fantasy',
+            createdBy: adminUser.id,
+            budget: 100000000,
+            maxPlayers: 25,
+            lineupSize: 9,
+            marketOpen: true,
+            monthlyFee: 500,
+            season: new Date().getFullYear().toString(),
+            isActive: true,
+            pointRules: {
+              create: getDefaultPointRules()
+            }
+          },
+          include: {
+            pointRules: true,
+            _count: { select: { members: true } }
+          }
+        })
+        return NextResponse.json({
+          league: newLeague,
+          standings: [],
+          stats: { totalMembers: 0, currentWeek: getCurrentWeek() }
+        })
+      }
+      
       return NextResponse.json({ error: 'No hay liga activa' }, { status: 404 })
     }
 
-    // Obtener clasificación
-    const standings = await db.leagueMember.findMany({
-      where: { 
-        leagueId: league.id,
-        isActive: true
+    // Obtener todos los usuarios activos ordenados por puntos
+    const users = await db.user.findMany({
+      where: {
+        status: { in: ['active', 'pending'] },
+        role: { not: 'admin' }
       },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            image: true,
-            totalPoints: true,
-            balance: true,
-            paymentStatus: true,
-            status: true
-          }
-        }
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        image: true,
+        totalPoints: true,
+        balance: true,
+        paymentStatus: true,
+        status: true
       },
-      orderBy: [
-        { totalPoints: 'desc' }
-      ]
+      orderBy: { totalPoints: 'desc' }
     })
 
     // Agregar ranking
-    const rankedStandings = standings.map((member, index) => ({
-      ...member,
-      rank: index + 1
+    const standings = users.map((user, index) => ({
+      ...user,
+      rank: index + 1,
+      id: `standing-${user.id}`
     }))
 
     // Obtener estadísticas de la liga
@@ -75,9 +106,7 @@ export async function GET(request: Request) {
     // Top jugadores más fichados
     const topPlayers = await db.player.findMany({
       where: {
-        signings: {
-          some: {}
-        }
+        signings: { some: {} }
       },
       include: {
         team: {
@@ -102,8 +131,13 @@ export async function GET(request: Request) {
         isSet: true
       },
       include: {
-        user: {
-          select: { name: true, image: true }
+        entries: {
+          where: { isStarter: true },
+          include: {
+            player: {
+              select: { name: true, team: { select: { shortName: true } } }
+            }
+          }
         }
       },
       orderBy: { totalPoints: 'desc' },
@@ -112,9 +146,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       league,
-      standings: rankedStandings,
+      standings,
       stats: {
-        totalMembers: standings.length,
+        totalMembers: users.length,
         totalTransfers,
         totalLineups,
         currentWeek
@@ -144,8 +178,8 @@ export async function POST(request: Request) {
       where: { id: session.user.id }
     })
 
-    if (!user || user.status !== 'active') {
-      return NextResponse.json({ error: 'Usuario no activo' }, { status: 403 })
+    if (!user || user.status === 'banned' || user.status === 'expelled') {
+      return NextResponse.json({ error: 'Usuario no autorizado' }, { status: 403 })
     }
 
     // Obtener liga
@@ -198,4 +232,25 @@ function getCurrentWeek(): number {
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
   const week = Math.ceil(diffDays / 7)
   return Math.max(1, Math.min(26, week))
+}
+
+// Reglas de puntos por defecto
+function getDefaultPointRules() {
+  return [
+    { category: 'batting', action: 'hit', points: 1, description: 'Hit (sencillo)' },
+    { category: 'batting', action: 'double', points: 2, description: 'Doble' },
+    { category: 'batting', action: 'triple', points: 3, description: 'Triple' },
+    { category: 'batting', action: 'home_run', points: 4, description: 'Home Run' },
+    { category: 'batting', action: 'rbi', points: 1, description: 'Carrera impulsada' },
+    { category: 'batting', action: 'run', points: 1, description: 'Carrera anotada' },
+    { category: 'batting', action: 'stolen_base', points: 2, description: 'Base robada' },
+    { category: 'batting', action: 'walk', points: 1, description: 'Base por bolas' },
+    { category: 'batting', action: 'strikeout', points: -1, description: 'Ponche (bateador)' },
+    { category: 'pitching', action: 'win', points: 5, description: 'Victoria' },
+    { category: 'pitching', action: 'save', points: 5, description: 'Salvamento' },
+    { category: 'pitching', action: 'inning_pitched', points: 1, description: 'Entrada lanzada' },
+    { category: 'pitching', action: 'strikeout_pitcher', points: 1, description: 'Ponche (pitcher)' },
+    { category: 'pitching', action: 'earned_run', points: -2, description: 'Carrera limpia' },
+    { category: 'pitching', action: 'loss', points: -3, description: 'Derrota' },
+  ]
 }

@@ -13,23 +13,20 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url)
     const position = searchParams.get('position')
-    const isFree = searchParams.get('isFree')
+    const teamId = searchParams.get('teamId')
     const search = searchParams.get('search')
-    const userId = searchParams.get('userId')
+    const userId = searchParams.get('userId') || session.user.id
 
     // Obtener liga activa
     const league = await db.league.findFirst({
       where: { isActive: true }
     })
 
-    if (!league) {
-      return NextResponse.json({ error: 'No hay liga activa' }, { status: 404 })
-    }
-
     // Construir filtros
-    const where: Record<string, unknown> = {}
+     
+    const where: any = {}
     if (position) where.position = position
-    if (isFree !== null) where.isFree = isFree === 'true'
+    if (teamId) where.teamId = teamId
     if (search) {
       where.OR = [
         { name: { contains: search } },
@@ -49,9 +46,9 @@ export async function GET(request: Request) {
             city: true
           }
         },
-        signings: userId ? {
+        signings: {
           where: { userId }
-        } : false
+        }
       },
       orderBy: [
         { isStar: 'desc' },
@@ -59,39 +56,55 @@ export async function GET(request: Request) {
       ]
     })
 
-    // Si hay usuario, obtener su balance y fichajes
-    let userData = null
-    if (userId) {
-      const user = await db.user.findUnique({
-        where: { id: userId },
-        select: {
-          balance: true,
-          totalPoints: true
-        }
-      })
-      
-      const signings = await db.signing.findMany({
-        where: { userId },
-        include: {
-          player: {
-            include: { team: true }
-          }
-        }
-      })
+    // Formatear jugadores
+    const formattedPlayers = players.map(p => ({
+      id: p.id,
+      name: p.name,
+      position: p.position,
+      team: p.team,
+      price: p.price,
+      marketValue: p.marketValue,
+      isStar: p.isStar,
+      isFree: p.isFree,
+      hr: p.hr,
+      rbi: p.rbi,
+      avg: p.avg,
+      era: p.era,
+      wins: p.wins,
+      saves: p.saves,
+      totalFantasyPoints: p.totalFantasyPoints,
+      number: p.number
+    }))
 
-      userData = {
+    // Obtener datos del usuario
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: {
+        balance: true,
+        totalPoints: true
+      }
+    })
+
+    // Obtener fichajes del usuario
+    const signings = await db.signing.findMany({
+      where: { userId },
+      include: {
+        player: {
+          include: { team: true }
+        }
+      }
+    })
+
+    return NextResponse.json({
+      league,
+      players: formattedPlayers,
+      userData: {
         balance: user?.balance || 0,
         totalPoints: user?.totalPoints || 0,
         signings,
         signingCount: signings.length
-      }
-    }
-
-    return NextResponse.json({
-      league,
-      players,
-      userData,
-      marketOpen: league.marketOpen
+      },
+      marketOpen: league?.marketOpen || false
     })
   } catch (error) {
     console.error('Error fetching market:', error)
@@ -110,7 +123,7 @@ export async function POST(request: Request) {
     const body = await request.json()
     const { playerId, price } = body
 
-    // Verificar que el usuario puede fichar
+    // Verificar usuario
     const user = await db.user.findUnique({
       where: { id: session.user.id },
       include: {
@@ -122,12 +135,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
 
-    if (user.status !== 'active') {
+    if (user.status !== 'active' && user.role !== 'admin') {
       return NextResponse.json({ error: 'Usuario no activo' }, { status: 403 })
     }
 
-    if (user.paymentStatus !== 'paid') {
-      return NextResponse.json({ error: 'Debes pagar para fichar jugadores' }, { status: 403 })
+    // Admin no necesita pagar
+    if (user.paymentStatus !== 'paid' && user.role !== 'admin') {
+      return NextResponse.json({ error: 'Debes pagar la mensualidad para fichar jugadores' }, { status: 403 })
     }
 
     // Obtener liga activa
@@ -135,11 +149,15 @@ export async function POST(request: Request) {
       where: { isActive: true }
     })
 
-    if (!league || !league.marketOpen) {
+    if (!league) {
+      return NextResponse.json({ error: 'No hay liga activa' }, { status: 404 })
+    }
+
+    if (!league.marketOpen) {
       return NextResponse.json({ error: 'El mercado está cerrado' }, { status: 403 })
     }
 
-    // Verificar límites
+    // Verificar límite de jugadores
     if (user.signings.length >= league.maxPlayers) {
       return NextResponse.json({ error: `Máximo ${league.maxPlayers} jugadores en plantilla` }, { status: 400 })
     }
@@ -176,7 +194,10 @@ export async function POST(request: Request) {
     // Actualizar jugador
     await db.player.update({
       where: { id: playerId },
-      data: { isFree: false }
+      data: { 
+        isFree: false,
+        ownership: { increment: 1 }
+      }
     })
 
     // Actualizar balance del usuario
@@ -202,7 +223,7 @@ export async function POST(request: Request) {
     })
 
     return NextResponse.json({ 
-      message: 'Jugador fichado correctamente',
+      message: `¡Has fichado a ${player.name} correctamente!`,
       signing 
     })
   } catch (error) {
@@ -227,12 +248,10 @@ export async function DELETE(request: Request) {
     }
 
     // Verificar fichaje
-    const signing = await db.signing.findUnique({
+    const signing = await db.signing.findFirst({
       where: {
-        userId_playerId: {
-          userId: session.user.id,
-          playerId
-        }
+        userId: session.user.id,
+        playerId
       },
       include: { player: true }
     })
@@ -246,11 +265,15 @@ export async function DELETE(request: Request) {
       where: { isActive: true }
     })
 
-    if (!league || !league.marketOpen) {
+    if (!league) {
+      return NextResponse.json({ error: 'No hay liga activa' }, { status: 404 })
+    }
+
+    if (!league.marketOpen) {
       return NextResponse.json({ error: 'El mercado está cerrado' }, { status: 403 })
     }
 
-    // Calcular precio de venta (70% del valor de mercado)
+    // Calcular precio de venta (70% del valor de mercado actual)
     const sellPrice = Math.floor(signing.player.marketValue * 0.7)
 
     // Eliminar fichaje
@@ -261,7 +284,10 @@ export async function DELETE(request: Request) {
     // Actualizar jugador a libre
     await db.player.update({
       where: { id: playerId },
-      data: { isFree: true }
+      data: { 
+        isFree: true,
+        ownership: { decrement: 1 }
+      }
     })
 
     // Actualizar balance
@@ -277,7 +303,7 @@ export async function DELETE(request: Request) {
       data: {
         playerId,
         fromUserId: session.user.id,
-        toUserId: session.user.id, // Se vende al mercado
+        toUserId: null,
         leagueId: league.id,
         price: sellPrice,
         type: 'sell',
@@ -287,7 +313,7 @@ export async function DELETE(request: Request) {
     })
 
     return NextResponse.json({ 
-      message: 'Jugador vendido correctamente',
+      message: `${signing.player.name} vendido correctamente`,
       sellPrice 
     })
   } catch (error) {

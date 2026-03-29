@@ -44,6 +44,7 @@ export async function POST(request: Request) {
           number: player.number,
           price: player.price,
           marketValue: player.price,
+          previousPrice: player.price,
           isStar: player.isStar || false,
           isFree: true,
           hr: player.hr || 0,
@@ -53,7 +54,11 @@ export async function POST(request: Request) {
           wins: player.wins || 0,
           losses: player.losses || 0,
           saves: player.saves || 0,
-          totalFantasyPoints: Math.floor(Math.random() * 100) + (player.isStar ? 200 : 50)
+          strikeouts: player.strikeouts || 0,
+          runs: player.runs || 0,
+          sb: player.sb || 0,
+          totalFantasyPoints: Math.floor(Math.random() * 100) + (player.isStar ? 200 : 50),
+          ownership: 0
         }))
       })
     }
@@ -70,12 +75,13 @@ export async function POST(request: Request) {
         adminUser = await db.user.create({
           data: {
             email: process.env.ADMIN_EMAIL || 'admin@mlbfantasy.com',
-            name: 'Admin',
+            name: 'Administrador',
             role: 'admin',
-            isAdmin: true,
             status: 'active',
             paymentStatus: 'paid',
-            balance: 100000000
+            balance: 100000000,
+            isPaid: true,
+            lastPaymentDate: new Date()
           }
         })
       }
@@ -87,23 +93,45 @@ export async function POST(request: Request) {
           createdBy: adminUser.id,
           budget: 100000000,
           maxPlayers: 25,
-          lineupSize: 9,
+          lineupSize: 11,
           marketOpen: true,
           monthlyFee: 500,
           season: new Date().getFullYear().toString(),
+          isActive: true,
           pointRules: {
             create: [
-              { action: 'hit', points: 1, description: 'Hit' },
-              { action: 'home_run', points: 4, description: 'Home Run' },
-              { action: 'rbi', points: 1, description: 'Carrera impulsada' },
-              { action: 'run', points: 1, description: 'Carrera anotada' },
-              { action: 'stolen_base', points: 2, description: 'Base robada' },
-              { action: 'win', points: 5, description: 'Victoria de pitcher' },
-              { action: 'save', points: 3, description: 'Salvado' },
-              { action: 'strikeout', points: 1, description: 'Ponche (pitcher)' },
-              { action: 'innings_pitched', points: 1, description: 'Entrada lanzada' }
+              { category: 'batting', action: 'hit', points: 1, description: 'Hit (sencillo)' },
+              { category: 'batting', action: 'double', points: 2, description: 'Doble' },
+              { category: 'batting', action: 'triple', points: 3, description: 'Triple' },
+              { category: 'batting', action: 'home_run', points: 4, description: 'Home Run' },
+              { category: 'batting', action: 'rbi', points: 1, description: 'Carrera impulsada' },
+              { category: 'batting', action: 'run', points: 1, description: 'Carrera anotada' },
+              { category: 'batting', action: 'stolen_base', points: 2, description: 'Base robada' },
+              { category: 'batting', action: 'walk', points: 1, description: 'Base por bolas' },
+              { category: 'batting', action: 'strikeout', points: -1, description: 'Ponche (bateador)' },
+              { category: 'pitching', action: 'win', points: 5, description: 'Victoria' },
+              { category: 'pitching', action: 'save', points: 5, description: 'Salvamento' },
+              { category: 'pitching', action: 'inning_pitched', points: 1, description: 'Entrada lanzada' },
+              { category: 'pitching', action: 'strikeout_pitcher', points: 1, description: 'Ponche (pitcher)' },
+              { category: 'pitching', action: 'earned_run', points: -2, description: 'Carrera limpia' },
+              { category: 'pitching', action: 'loss', points: -3, description: 'Derrota' },
             ]
           }
+        }
+      })
+    }
+
+    // Crear temporada activa si no existe
+    const existingSeason = await db.season.count()
+    if (existingSeason === 0) {
+      await db.season.create({
+        data: {
+          name: `Temporada ${new Date().getFullYear()}`,
+          startDate: new Date(),
+          endDate: new Date(new Date().setMonth(new Date().getMonth() + 8)),
+          status: 'active',
+          currentWeek: 1,
+          marketOpen: true
         }
       })
     }
@@ -113,7 +141,7 @@ export async function POST(request: Request) {
     const leagueCount = await db.league.count()
 
     return NextResponse.json({
-      message: 'Seed completado',
+      message: 'Seed completado exitosamente',
       teams: teamCount,
       players: playerCount,
       leagues: leagueCount

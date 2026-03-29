@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/app/api/auth/[...nextauth]/route'
+import { LINEUP_SIZE, LINEUP_POSITIONS, validateLineup } from '@/lib/scoring'
 
 // GET - Obtener lineup
 export async function GET(request: Request) {
@@ -14,7 +15,6 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const userId = searchParams.get('userId') || session.user.id
     const week = searchParams.get('week')
-    const season = searchParams.get('season')
 
     // Obtener liga activa
     const league = await db.league.findFirst({
@@ -27,13 +27,13 @@ export async function GET(request: Request) {
 
     // Calcular semana actual si no se especifica
     const currentWeek = week ? parseInt(week) : getCurrentWeek()
-    const currentSeason = season || new Date().getFullYear().toString()
+    const currentSeason = new Date().getFullYear().toString()
 
-    // Obtener o crear lineup
-    let lineup = await db.lineup.findFirst({
+    // Obtener lineup existente
+    const existingLineup = await db.lineup.findFirst({
       where: {
-        userId,
         leagueId: league.id,
+        userId,
         week: currentWeek,
         season: currentSeason
       },
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
             player: {
               include: {
                 team: {
-                  select: { name: true, shortName: true }
+                  select: { name: true, shortName: true, city: true }
                 }
               }
             }
@@ -59,7 +59,7 @@ export async function GET(request: Request) {
         player: {
           include: {
             team: {
-              select: { name: true, shortName: true }
+              select: { name: true, shortName: true, city: true }
             }
           }
         }
@@ -68,16 +68,18 @@ export async function GET(request: Request) {
 
     // Obtener reglas de puntos
     const pointRules = await db.pointRule.findMany({
-      where: { leagueId: league.id }
+      where: { leagueId: league.id, active: true }
     })
 
     return NextResponse.json({
-      lineup,
+      lineup: existingLineup,
       signings,
       league,
       currentWeek,
       currentSeason,
-      pointRules
+      pointRules,
+      lineupSize: LINEUP_SIZE,
+      lineupPositions: LINEUP_POSITIONS
     })
   } catch (error) {
     console.error('Error fetching lineup:', error)
@@ -101,8 +103,12 @@ export async function POST(request: Request) {
       where: { id: session.user.id }
     })
 
-    if (!user || user.status !== 'active' || user.paymentStatus !== 'paid') {
+    if (!user || (user.status !== 'active' && user.role !== 'admin')) {
       return NextResponse.json({ error: 'Usuario no autorizado para lineup' }, { status: 403 })
+    }
+
+    if (user.paymentStatus !== 'paid' && user.role !== 'admin') {
+      return NextResponse.json({ error: 'Debes pagar la mensualidad para configurar tu lineup' }, { status: 403 })
     }
 
     // Obtener liga
@@ -117,6 +123,12 @@ export async function POST(request: Request) {
     const currentWeek = week || getCurrentWeek()
     const currentSeason = season || new Date().getFullYear().toString()
 
+    // Validar lineup
+    const validation = validateLineup(entries)
+    if (!validation.valid) {
+      return NextResponse.json({ error: validation.errors.join('. ') }, { status: 400 })
+    }
+
     // Verificar que los jugadores pertenecen al usuario
     const playerIds = entries.map((e: { playerId: string }) => e.playerId)
     const signings = await db.signing.findMany({
@@ -130,17 +142,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Algunos jugadores no están en tu plantilla' }, { status: 400 })
     }
 
-    // Verificar cantidad de titulares
-    const starters = entries.filter((e: { isStarter: boolean }) => e.isStarter)
-    if (starters.length !== league.lineupSize) {
-      return NextResponse.json({ error: `Debes tener exactamente ${league.lineupSize} titulares` }, { status: 400 })
-    }
-
     // Eliminar lineup anterior si existe
     const existingLineup = await db.lineup.findFirst({
       where: {
-        userId: session.user.id,
         leagueId: league.id,
+        userId: session.user.id,
         week: currentWeek,
         season: currentSeason
       }
@@ -158,16 +164,19 @@ export async function POST(request: Request) {
     // Crear nuevo lineup
     const lineup = await db.lineup.create({
       data: {
-        userId: session.user.id,
         leagueId: league.id,
+        userId: session.user.id,
         week: currentWeek,
         season: currentSeason,
         isSet: true,
         entries: {
-          create: entries.map((entry: { playerId: string; position: string; isStarter: boolean }) => ({
+          create: entries.map((entry: { playerId: string; position: string; isStarter: boolean; isCaptain?: boolean }) => ({
             playerId: entry.playerId,
             position: entry.position,
-            isStarter: entry.isStarter
+            isStarter: entry.isStarter,
+            isCaptain: entry.isCaptain || false,
+            userId: session.user.id,
+            week: currentWeek
           }))
         }
       },
@@ -195,9 +204,9 @@ export async function POST(request: Request) {
 // Función auxiliar para obtener la semana actual de la temporada MLB
 function getCurrentWeek(): number {
   const now = new Date()
-  const seasonStart = new Date(now.getFullYear(), 2, 28) // 28 de marzo aproximadamente
+  const seasonStart = new Date(now.getFullYear(), 2, 28)
   const diffTime = now.getTime() - seasonStart.getTime()
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
   const week = Math.ceil(diffDays / 7)
-  return Math.max(1, Math.min(26, week)) // Máximo 26 semanas en temporada regular
+  return Math.max(1, Math.min(26, week))
 }

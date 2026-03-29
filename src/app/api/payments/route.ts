@@ -19,7 +19,7 @@ export async function GET(request: Request) {
     // Vista de admin - ver todos los pagos pendientes
     if (adminView && session.user.role === 'admin') {
       const payments = await db.payment.findMany({
-        where: status ? { status } : undefined,
+        where: status ? { status } : { status: 'pending' },
         include: {
           user: {
             select: {
@@ -71,15 +71,28 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'No hay liga activa' }, { status: 404 })
     }
 
+    // Verificar que no exista un pago para el mismo mes
+    const existingPayment = await db.payment.findFirst({
+      where: {
+        userId: session.user.id,
+        month: month || new Date().toISOString().slice(0, 7),
+        status: { in: ['pending', 'verified'] }
+      }
+    })
+
+    if (existingPayment) {
+      return NextResponse.json({ error: 'Ya existe un pago registrado para este mes' }, { status: 400 })
+    }
+
     // Crear el pago
     const payment = await db.payment.create({
       data: {
         userId: session.user.id,
-        amount: amount || league.monthlyFee,
+        amount: amount || league.monthlyFee || 500,
         method: 'transfermovil',
         reference,
         phoneNumber,
-        month: month || new Date().toISOString().slice(0, 7), // YYYY-MM
+        month: month || new Date().toISOString().slice(0, 7),
         status: 'pending'
       }
     })
@@ -95,7 +108,7 @@ export async function POST(request: Request) {
           userId: admin.id,
           type: 'payment_pending',
           title: 'Nuevo pago pendiente',
-          message: `${session.user.name} ha registrado un pago de ${amount} pesos`,
+          message: `${session.user.name} ha registrado un pago de ${amount || league.monthlyFee} pesos`,
           data: JSON.stringify({ paymentId: payment.id })
         }
       })
@@ -117,7 +130,7 @@ export async function PATCH(request: Request) {
     }
 
     const body = await request.json()
-    const { paymentId, action } = body // action: 'verify' | 'reject'
+    const { paymentId, action } = body
 
     const payment = await db.payment.findUnique({
       where: { id: paymentId },
@@ -145,7 +158,8 @@ export async function PATCH(request: Request) {
         data: {
           paymentStatus: 'paid',
           lastPaymentDate: new Date(),
-          paymentDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // +30 días
+          paymentDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          isPaid: true,
           status: 'active'
         }
       })
@@ -189,24 +203,46 @@ export async function PATCH(request: Request) {
 }
 
 // DELETE - Expulsar usuarios sin pago (solo admin)
-export async function DELETE(request: Request) {
+export async function DELETE() {
   try {
     const session = await getServerSession(authOptions)
     if (!session?.user || session.user.role !== 'admin') {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
     }
 
-    // Encontrar usuarios con pagos vencidos
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+
+    // Encontrar usuarios con pagos vencidos o sin pagar por más de 30 días
     const expiredUsers = await db.user.findMany({
       where: {
         role: 'user',
         paymentStatus: 'unpaid',
-        paymentDueDate: { lt: new Date() }
+        OR: [
+          { paymentDueDate: { lt: new Date() } },
+          { 
+            AND: [
+              { lastPaymentDate: null },
+              { createdAt: { lt: thirtyDaysAgo } }
+            ]
+          }
+        ]
+      },
+      include: {
+        signings: { include: { player: true } }
       }
     })
 
     // Expulsar usuarios
     for (const user of expiredUsers) {
+      // Liberar jugadores al mercado
+      for (const signing of user.signings) {
+        await db.player.update({
+          where: { id: signing.playerId },
+          data: { isFree: true }
+        })
+      }
+
       // Eliminar fichajes del usuario
       await db.signing.deleteMany({
         where: { userId: user.id }
@@ -214,9 +250,6 @@ export async function DELETE(request: Request) {
 
       // Eliminar lineups
       await db.lineupEntry.deleteMany({
-        where: { lineup: { userId: user.id } }
-      })
-      await db.lineup.deleteMany({
         where: { userId: user.id }
       })
 
@@ -224,7 +257,7 @@ export async function DELETE(request: Request) {
       await db.user.update({
         where: { id: user.id },
         data: {
-          status: 'expired',
+          status: 'expelled',
           paymentStatus: 'expired',
           balance: 0,
           totalPoints: 0
@@ -236,15 +269,15 @@ export async function DELETE(request: Request) {
         data: {
           userId: user.id,
           type: 'payment_expired',
-          title: 'Cuenta expirada',
-          message: 'Tu cuenta ha sido expirada por falta de pago. Contacta al administrador para reactivarla.'
+          title: 'Cuenta expulsada',
+          message: 'Tu cuenta ha sido expulsada por falta de pago. Contacta al administrador para reactivarla.'
         }
       })
     }
 
     return NextResponse.json({ 
       message: `${expiredUsers.length} usuarios expulsados`,
-      users: expiredUsers 
+      count: expiredUsers.length
     })
   } catch (error) {
     console.error('Error expelling users:', error)

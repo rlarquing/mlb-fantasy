@@ -25,7 +25,8 @@ export async function GET() {
                 email: true,
                 status: true,
                 paymentStatus: true,
-                totalPoints: true
+                totalPoints: true,
+                balance: true
               }
             }
           }
@@ -45,22 +46,13 @@ export async function GET() {
           createdBy: session.user.id,
           budget: 100000000,
           maxPlayers: 25,
-          lineupSize: 9,
+          lineupSize: 11,
           marketOpen: true,
           monthlyFee: 500,
           season: new Date().getFullYear().toString(),
+          isActive: true,
           pointRules: {
-            create: [
-              { action: 'hit', points: 1, description: 'Hit' },
-              { action: 'home_run', points: 4, description: 'Home Run' },
-              { action: 'rbi', points: 1, description: 'Carrera impulsada' },
-              { action: 'run', points: 1, description: 'Carrera anotada' },
-              { action: 'stolen_base', points: 2, description: 'Base robada' },
-              { action: 'win', points: 5, description: 'Victoria de pitcher' },
-              { action: 'save', points: 3, description: 'Salvado' },
-              { action: 'strikeout', points: 1, description: 'Ponche (pitcher)' },
-              { action: 'innings_pitched', points: 1, description: 'Entrada lanzada' }
-            ]
+            create: getDefaultPointRules()
           }
         },
         include: {
@@ -71,7 +63,28 @@ export async function GET() {
       })
     }
 
-    return NextResponse.json(league)
+    // Obtener todos los usuarios
+    const allUsers = await db.user.findMany({
+      where: { role: 'user' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        status: true,
+        paymentStatus: true,
+        totalPoints: true,
+        balance: true,
+        createdAt: true,
+        lastPaymentDate: true,
+        paymentDueDate: true
+      },
+      orderBy: { createdAt: 'desc' }
+    })
+
+    return NextResponse.json({
+      league,
+      allUsers
+    })
   } catch (error) {
     console.error('Error fetching league:', error)
     return NextResponse.json({ error: 'Error al obtener liga' }, { status: 500 })
@@ -102,7 +115,8 @@ export async function PATCH(request: Request) {
       seasonEnd
     } = body
 
-    const updateData: Record<string, unknown> = {}
+     
+    const updateData: Record<string, any> = {}
     if (name !== undefined) updateData.name = name
     if (budget !== undefined) updateData.budget = budget
     if (maxPlayers !== undefined) updateData.maxPlayers = maxPlayers
@@ -116,7 +130,8 @@ export async function PATCH(request: Request) {
 
     const league = await db.league.update({
       where: { id: leagueId },
-      data: updateData
+      data: updateData,
+      include: { pointRules: true }
     })
 
     return NextResponse.json(league)
@@ -145,12 +160,17 @@ export async function POST(request: Request) {
         data: { isActive: false }
       })
 
-      // Resetear usuarios
+      // Resetear usuarios (excepto admin)
       await db.user.updateMany({
+        where: { role: 'user' },
         data: {
           totalPoints: 0,
           balance: 100000000,
-          paymentStatus: 'unpaid'
+          paymentStatus: 'unpaid',
+          isPaid: false,
+          status: 'pending',
+          lastPaymentDate: null,
+          paymentDueDate: null
         }
       })
 
@@ -159,10 +179,14 @@ export async function POST(request: Request) {
       await db.lineupEntry.deleteMany({})
       await db.lineup.deleteMany({})
       await db.transfer.deleteMany({})
+      await db.leagueMember.deleteMany({})
 
       // Resetear jugadores a libres
       await db.player.updateMany({
-        data: { isFree: true }
+        data: { 
+          isFree: true,
+          ownership: 0
+        }
       })
 
       // Crear nueva liga
@@ -174,26 +198,40 @@ export async function POST(request: Request) {
           season: newSeason || new Date().getFullYear().toString(),
           budget: 100000000,
           maxPlayers: 25,
-          lineupSize: 9,
+          lineupSize: 11,
           marketOpen: true,
           monthlyFee: 500,
+          isActive: true,
           pointRules: {
-            create: [
-              { action: 'hit', points: 1, description: 'Hit' },
-              { action: 'home_run', points: 4, description: 'Home Run' },
-              { action: 'rbi', points: 1, description: 'Carrera impulsada' },
-              { action: 'run', points: 1, description: 'Carrera anotada' },
-              { action: 'stolen_base', points: 2, description: 'Base robada' },
-              { action: 'win', points: 5, description: 'Victoria de pitcher' },
-              { action: 'save', points: 3, description: 'Salvado' },
-              { action: 'strikeout', points: 1, description: 'Ponche (pitcher)' },
-              { action: 'innings_pitched', points: 1, description: 'Entrada lanzada' }
-            ]
+            create: getDefaultPointRules()
           }
         }
       })
 
-      return NextResponse.json({ message: 'Liga reseteada', league: newLeague })
+      return NextResponse.json({ message: 'Liga reseteada correctamente', league: newLeague })
+    }
+
+    if (action === 'updatePrices') {
+      // Actualizar precios de jugadores basado en rendimiento
+      const players = await db.player.findMany()
+      
+      for (const player of players) {
+        const avgPoints = player.avgPoints || 0
+        const performanceFactor = Math.max(0.8, Math.min(1.2, 1 + (player.totalFantasyPoints - avgPoints * 26) / 100))
+        const newPrice = Math.round(player.price * performanceFactor)
+        const boundedPrice = Math.max(500000, Math.min(50000000, newPrice))
+        
+        await db.player.update({
+          where: { id: player.id },
+          data: {
+            previousPrice: player.price,
+            price: boundedPrice,
+            marketValue: boundedPrice
+          }
+        })
+      }
+      
+      return NextResponse.json({ message: 'Precios actualizados' })
     }
 
     return NextResponse.json({ error: 'Acción no válida' }, { status: 400 })
@@ -201,4 +239,25 @@ export async function POST(request: Request) {
     console.error('Error resetting league:', error)
     return NextResponse.json({ error: 'Error al resetear liga' }, { status: 500 })
   }
+}
+
+// Reglas de puntos por defecto
+function getDefaultPointRules() {
+  return [
+    { category: 'batting', action: 'hit', points: 1, description: 'Hit (sencillo)' },
+    { category: 'batting', action: 'double', points: 2, description: 'Doble' },
+    { category: 'batting', action: 'triple', points: 3, description: 'Triple' },
+    { category: 'batting', action: 'home_run', points: 4, description: 'Home Run' },
+    { category: 'batting', action: 'rbi', points: 1, description: 'Carrera impulsada' },
+    { category: 'batting', action: 'run', points: 1, description: 'Carrera anotada' },
+    { category: 'batting', action: 'stolen_base', points: 2, description: 'Base robada' },
+    { category: 'batting', action: 'walk', points: 1, description: 'Base por bolas' },
+    { category: 'batting', action: 'strikeout', points: -1, description: 'Ponche (bateador)' },
+    { category: 'pitching', action: 'win', points: 5, description: 'Victoria' },
+    { category: 'pitching', action: 'save', points: 5, description: 'Salvamento' },
+    { category: 'pitching', action: 'inning_pitched', points: 1, description: 'Entrada lanzada' },
+    { category: 'pitching', action: 'strikeout_pitcher', points: 1, description: 'Ponche (pitcher)' },
+    { category: 'pitching', action: 'earned_run', points: -2, description: 'Carrera limpia' },
+    { category: 'pitching', action: 'loss', points: -3, description: 'Derrota' },
+  ]
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useSession, signIn, signOut } from 'next-auth/react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,6 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
@@ -17,9 +16,9 @@ import { Separator } from '@/components/ui/separator'
 import { toast } from '@/hooks/use-toast'
 import { 
   CircleDot, Trophy, Users, Calendar, Zap, Crown, Star, CheckCircle2,
-  Shield, Activity, Ban, UserCheck, Plus, Clock, CreditCard, Wallet,
-  ArrowUpRight, ArrowDownRight, TrendingUp, LogOut, LogIn, Settings,
-  UsersRound, BarChart3, Target, DollarSign, Send, AlertCircle, Loader2
+  Shield, Ban, Plus, CreditCard, Wallet,
+  TrendingUp, LogOut, LogIn, Settings,
+  Target, DollarSign, AlertCircle, Loader2, Crown as CaptainIcon
 } from 'lucide-react'
 
 // Interfaces
@@ -39,6 +38,7 @@ interface Player {
   wins: number
   saves: number
   totalFantasyPoints: number
+  number?: number
 }
 
 interface Signing {
@@ -82,14 +82,15 @@ interface League {
   marketOpen: boolean
   monthlyFee: number
   season: string
-  pointRules?: { action: string; points: number; description?: string }[]
 }
 
 interface Standing {
   id: string
   rank: number
   totalPoints: number
-  user: { id: string; name: string; email: string; totalPoints: number; balance: number }
+  name: string
+  email: string
+  balance: number
 }
 
 interface LineupEntry {
@@ -97,8 +98,16 @@ interface LineupEntry {
   playerId: string
   position: string
   isStarter: boolean
+  isCaptain: boolean
   points: number
   player: Player
+}
+
+// Información de Transfermóvil
+const TRANSFERMOVIL_INFO = {
+  accountNumber: '9223 4567 8901 2345',
+  accountHolder: 'MLB Fantasy Cuba',
+  concept: 'Mensualidad MLB Fantasy'
 }
 
 export default function MLBFantasyApp() {
@@ -121,13 +130,11 @@ export default function MLBFantasyApp() {
   const [showAdmin, setShowAdmin] = useState(false)
   const [adminTab, setAdminTab] = useState('league')
   const [showPaymentDialog, setShowPaymentDialog] = useState(false)
-  const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [positionFilter, setPositionFilter] = useState('all')
+  const [teamFilter, setTeamFilter] = useState('all')
   
   // Form states
-  const [loginEmail, setLoginEmail] = useState('')
-  const [loginName, setLoginName] = useState('')
   const [paymentForm, setPaymentForm] = useState({
     amount: 500,
     reference: '',
@@ -138,10 +145,14 @@ export default function MLBFantasyApp() {
   const [leagueForm, setLeagueForm] = useState({
     budget: 100000000,
     maxPlayers: 25,
-    lineupSize: 9,
+    lineupSize: 11,
     monthlyFee: 500,
     marketOpen: true
   })
+
+  // Lineup state
+  const [selectedLineup, setSelectedLineup] = useState<{playerId: string; position: string; isCaptain: boolean}[]>([])
+  const [captainId, setCaptainId] = useState<string | null>(null)
 
   // Cargar datos del usuario
   useEffect(() => {
@@ -152,18 +163,16 @@ export default function MLBFantasyApp() {
     }
   }, [status, session])
 
-  const fetchUserData = async () => {
+  const fetchUserData = useCallback(async () => {
     try {
       setLoading(true)
       
-      // Obtener datos del usuario
       const userRes = await fetch('/api/auth/me')
       if (userRes.ok) {
         const userData = await userRes.json()
         setUser(userData)
       }
       
-      // Obtener liga
       const leagueRes = await fetch('/api/league')
       if (leagueRes.ok) {
         const leagueData = await leagueRes.json()
@@ -172,7 +181,6 @@ export default function MLBFantasyApp() {
         setCurrentWeek(leagueData.stats?.currentWeek || 1)
       }
       
-      // Cargar datos según el tab
       await Promise.all([
         fetchMarketData(),
         fetchPaymentsData()
@@ -184,9 +192,9 @@ export default function MLBFantasyApp() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const fetchMarketData = async () => {
+  const fetchMarketData = useCallback(async () => {
     try {
       const res = await fetch(`/api/market?userId=${user?.id || session?.user?.id}`)
       if (res.ok) {
@@ -199,9 +207,9 @@ export default function MLBFantasyApp() {
     } catch (error) {
       console.error('Error fetching market:', error)
     }
-  }
+  }, [user?.id, session?.user?.id])
 
-  const fetchPaymentsData = async () => {
+  const fetchPaymentsData = useCallback(async () => {
     try {
       const [userPayments, adminPayments] = await Promise.all([
         fetch(`/api/payments?userId=${user?.id || session?.user?.id}`),
@@ -219,42 +227,36 @@ export default function MLBFantasyApp() {
     } catch (error) {
       console.error('Error fetching payments:', error)
     }
-  }
+  }, [user?.id, user?.role, session?.user?.id, session?.user?.role])
 
-  const fetchLineupData = async () => {
+  const fetchLineupData = useCallback(async () => {
     try {
       const res = await fetch(`/api/lineup?userId=${user?.id || session?.user?.id}`)
       if (res.ok) {
         const data = await res.json()
         setLineupEntries(data.lineup?.entries || [])
         setSignings(data.signings || [])
+        
+        // Load existing lineup selection
+        if (data.lineup?.entries) {
+          const entries = data.lineup.entries
+            .filter((e: LineupEntry) => e.isStarter)
+            .map((e: LineupEntry) => ({
+              playerId: e.playerId,
+              position: e.position,
+              isCaptain: e.isCaptain
+            }))
+          setSelectedLineup(entries)
+          const captain = entries.find((e: { isCaptain: boolean }) => e.isCaptain)
+          if (captain) setCaptainId(captain.playerId)
+        }
       }
     } catch (error) {
       console.error('Error fetching lineup:', error)
     }
-  }
+  }, [user?.id, session?.user?.id])
 
   // Login handlers
-  const handleDevLogin = async () => {
-    if (!loginEmail) {
-      toast({ title: 'Error', description: 'Ingresa tu email', variant: 'destructive' })
-      return
-    }
-    
-    const result = await signIn('dev-login', {
-      email: loginEmail,
-      name: loginName || loginEmail.split('@')[0],
-      redirect: false
-    })
-    
-    if (result?.error) {
-      toast({ title: 'Error', description: result.error, variant: 'destructive' })
-    } else {
-      setShowLoginDialog(false)
-      toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión correctamente' })
-    }
-  }
-
   const handleGoogleLogin = async () => {
     await signIn('google', { callbackUrl: '/' })
   }
@@ -284,7 +286,7 @@ export default function MLBFantasyApp() {
       toast({ title: '¡Fichaje exitoso!', description: data.message })
       await fetchMarketData()
       await fetchUserData()
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', description: 'No se pudo completar el fichaje', variant: 'destructive' })
     }
   }
@@ -305,7 +307,7 @@ export default function MLBFantasyApp() {
       toast({ title: 'Venta exitosa', description: `Recibiste ${data.sellPrice?.toLocaleString()} pesos` })
       await fetchMarketData()
       await fetchUserData()
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', description: 'No se pudo vender el jugador', variant: 'destructive' })
     }
   }
@@ -329,7 +331,7 @@ export default function MLBFantasyApp() {
       setShowPaymentDialog(false)
       setPaymentForm({ amount: 500, reference: '', phoneNumber: '' })
       await fetchPaymentsData()
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', description: 'No se pudo registrar el pago', variant: 'destructive' })
     }
   }
@@ -347,9 +349,9 @@ export default function MLBFantasyApp() {
         return
       }
       
-      toast({ title: 'Pago actualizado' })
+      toast({ title: action === 'verify' ? 'Pago confirmado' : 'Pago rechazado' })
       await fetchPaymentsData()
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', variant: 'destructive' })
     }
   }
@@ -373,7 +375,7 @@ export default function MLBFantasyApp() {
       const data = await res.json()
       setLeague(data)
       toast({ title: 'Liga actualizada' })
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', variant: 'destructive' })
     }
   }
@@ -395,7 +397,7 @@ export default function MLBFantasyApp() {
         setLeague({ ...league, marketOpen })
       }
       toast({ title: marketOpen ? 'Mercado abierto' : 'Mercado cerrado' })
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', variant: 'destructive' })
     }
   }
@@ -404,19 +406,76 @@ export default function MLBFantasyApp() {
     try {
       const res = await fetch('/api/payments', { method: 'DELETE' })
       const data = await res.json()
-      toast({ title: 'Usuarios expulsados', description: data.message })
-    } catch (error) {
+      toast({ title: 'Usuarios expulsados', description: `${data.count || 0} usuarios expulsados` })
+      await fetchPaymentsData()
+    } catch {
       toast({ title: 'Error', variant: 'destructive' })
     }
   }
 
   // Lineup handlers
-  const handleSaveLineup = async (entries: { playerId: string; position: string; isStarter: boolean }[]) => {
+  const handleAddToLineup = (playerId: string, position: string) => {
+    // Verificar que el jugador no esté ya en el lineup
+    if (selectedLineup.some(e => e.playerId === playerId)) {
+      toast({ title: 'Error', description: 'El jugador ya está en el lineup', variant: 'destructive' })
+      return
+    }
+    
+    // Verificar que la posición no esté ocupada
+    if (selectedLineup.some(e => e.position === position)) {
+      toast({ title: 'Error', description: 'Esa posición ya está ocupada', variant: 'destructive' })
+      return
+    }
+    
+    setSelectedLineup([...selectedLineup, { playerId, position, isCaptain: false }])
+  }
+
+  const handleRemoveFromLineup = (playerId: string) => {
+    setSelectedLineup(selectedLineup.filter(e => e.playerId !== playerId))
+    if (captainId === playerId) setCaptainId(null)
+  }
+
+  const handleSetCaptain = (playerId: string) => {
+    setSelectedLineup(selectedLineup.map(e => ({
+      ...e,
+      isCaptain: e.playerId === playerId
+    })))
+    setCaptainId(playerId)
+  }
+
+  const handleSaveLineup = async () => {
     try {
+      // Validar lineup completo
+      const requiredPositions = ['P', 'C', '1B', '2B', '3B', 'SS', 'OF', 'OF', 'OF', 'DH']
+      const positionsFilled = requiredPositions.every(pos => {
+        if (pos === 'OF') {
+          return selectedLineup.filter(e => e.position === 'OF').length === 3
+        }
+        return selectedLineup.some(e => e.position === pos)
+      })
+      
+      if (!positionsFilled) {
+        toast({ title: 'Error', description: 'Debes completar todas las posiciones', variant: 'destructive' })
+        return
+      }
+      
+      if (!captainId) {
+        toast({ title: 'Error', description: 'Debes seleccionar un capitán', variant: 'destructive' })
+        return
+      }
+      
       const res = await fetch('/api/lineup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entries, week: currentWeek })
+        body: JSON.stringify({ 
+          entries: selectedLineup.map(e => ({
+            playerId: e.playerId,
+            position: e.position,
+            isStarter: true,
+            isCaptain: e.isCaptain
+          })),
+          week: currentWeek
+        })
       })
       
       const data = await res.json()
@@ -426,9 +485,9 @@ export default function MLBFantasyApp() {
         return
       }
       
-      toast({ title: 'Lineup guardado' })
+      toast({ title: 'Lineup guardado', description: 'Tu lineup ha sido configurado correctamente' })
       await fetchLineupData()
-    } catch (error) {
+    } catch {
       toast({ title: 'Error', variant: 'destructive' })
     }
   }
@@ -436,9 +495,11 @@ export default function MLBFantasyApp() {
   // Filter players
   const filteredPlayers = players.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.team?.name.toLowerCase().includes(searchQuery.toLowerCase())
+      p.team?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.team?.shortName.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesPosition = positionFilter === 'all' || p.position === positionFilter
-    return matchesSearch && matchesPosition
+    const matchesTeam = teamFilter === 'all' || p.team?.shortName === teamFilter
+    return matchesSearch && matchesPosition && matchesTeam
   })
 
   // Format helpers
@@ -475,7 +536,6 @@ export default function MLBFantasyApp() {
             <Button 
               onClick={handleGoogleLogin}
               className="w-full bg-white text-gray-800 hover:bg-gray-100 h-12"
-              disabled={process.env.NODE_ENV === 'development'}
             >
               <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -485,39 +545,6 @@ export default function MLBFantasyApp() {
               </svg>
               Continuar con Google
             </Button>
-            
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-white/20" />
-              </div>
-              <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-green-800/50 px-2 text-green-200">o modo desarrollo</span>
-              </div>
-            </div>
-            
-            <div className="space-y-3">
-              <Input
-                type="email"
-                placeholder="correo@ejemplo.com"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                className="bg-white/10 border-white/20 text-white placeholder:text-white/50"
-              />
-              <Input
-                type="text"
-                placeholder="Tu nombre"
-                value={loginName}
-                onChange={(e) => setLoginName(e.target.value)}
-                className="bg-white/10 border-white/20 text-white placeholder:text-white/50"
-              />
-              <Button 
-                onClick={handleDevLogin}
-                className="w-full bg-green-600 hover:bg-green-700"
-              >
-                <LogIn className="w-4 h-4 mr-2" />
-                Entrar (Dev)
-              </Button>
-            </div>
             
             <p className="text-xs text-center text-white/50 mt-4">
               Al entrar, aceptas nuestros términos de servicio
@@ -541,7 +568,7 @@ export default function MLBFantasyApp() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-white">MLB Fantasy</h1>
-                <p className="text-green-200 text-xs">Temporada {league?.season || new Date().getFullYear()}</p>
+                <p className="text-green-200 text-xs">Temporada {league?.season || new Date().getFullYear()} - Semana {currentWeek}</p>
               </div>
             </div>
             
@@ -559,7 +586,7 @@ export default function MLBFantasyApp() {
               )}
               
               {/* User info */}
-              <div className="text-right">
+              <div className="text-right hidden sm:block">
                 <div className="flex items-center gap-2">
                   <p className="text-white font-semibold text-sm">{user?.name || session?.user?.name}</p>
                   {(user?.role === 'admin' || session?.user?.role === 'admin') && (
@@ -579,7 +606,7 @@ export default function MLBFantasyApp() {
               </div>
               
               {/* Payment status */}
-              {user?.paymentStatus === 'unpaid' && (
+              {user?.paymentStatus === 'unpaid' && user?.role !== 'admin' && (
                 <Badge className="bg-yellow-500 text-black animate-pulse">
                   <AlertCircle className="w-3 h-3 mr-1" />
                   Sin pagar
@@ -617,7 +644,7 @@ export default function MLBFantasyApp() {
         <div className="bg-red-900/20 border-b border-red-500/20">
           <div className="max-w-7xl mx-auto px-4 py-4">
             <Tabs value={adminTab} onValueChange={setAdminTab}>
-              <TabsList className="bg-black/30 border border-white/10 mb-4">
+              <TabsList className="bg-black/30 border border-white/10 mb-4 flex-wrap h-auto">
                 <TabsTrigger value="league" className="data-[state=active]:bg-red-500/30 text-white">
                   <Settings className="w-4 h-4 mr-2" />
                   Liga
@@ -724,7 +751,7 @@ export default function MLBFantasyApp() {
                       className="w-full"
                     >
                       <Ban className="w-4 h-4 mr-2" />
-                      Expulsar usuarios sin pago
+                      Expulsar usuarios sin pago (30+ días)
                     </Button>
                   </CardContent>
                 </Card>
@@ -787,7 +814,7 @@ export default function MLBFantasyApp() {
               <TabsContent value="users">
                 <Card className="bg-white/5 border-white/10">
                   <CardHeader>
-                    <CardTitle className="text-white">Gestión de Usuarios</CardTitle>
+                    <CardTitle className="text-white">Clasificación de la Liga</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <ScrollArea className="h-96">
@@ -795,15 +822,15 @@ export default function MLBFantasyApp() {
                         {standings.map((s) => (
                           <div key={s.id} className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
                             <div className="flex items-center gap-3">
-                              <span className="text-white font-bold w-6">{s.rank}</span>
+                              <span className="text-white font-bold w-6">#{s.rank}</span>
                               <div>
-                                <p className="text-white">{s.user.name}</p>
-                                <p className="text-white/50 text-xs">{s.user.email}</p>
+                                <p className="text-white">{s.name}</p>
+                                <p className="text-white/50 text-xs">{s.email}</p>
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className="text-yellow-400 text-sm">{s.user.totalPoints} pts</span>
-                              <span className="text-green-300 text-sm">{(s.user.balance / 1000000).toFixed(0)}M</span>
+                              <span className="text-yellow-400 text-sm">{s.totalPoints} pts</span>
+                              <span className="text-green-300 text-sm">{(s.balance / 1000000).toFixed(0)}M</span>
                             </div>
                           </div>
                         ))}
@@ -873,7 +900,7 @@ export default function MLBFantasyApp() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="mt-3 flex items-center gap-4 text-sm">
+                  <div className="mt-3 flex items-center gap-4 text-sm flex-wrap">
                     <span className="text-white/70">Balance: <span className="text-green-300 font-bold">{formatCurrency(user?.balance || 0)}</span></span>
                     <span className="text-white/70">Jugadores: <span className="text-white font-bold">{signings.length}/{league?.maxPlayers || 25}</span></span>
                     <Badge className={league?.marketOpen ? 'bg-green-500' : 'bg-red-500'}>
@@ -885,7 +912,7 @@ export default function MLBFantasyApp() {
 
               {/* Players Grid */}
               <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {filteredPlayers.slice(0, 50).map((player) => (
+                {filteredPlayers.slice(0, 60).map((player) => (
                   <Card key={player.id} className={`bg-white/5 border-white/10 ${player.isStar ? 'border-yellow-500/50' : ''}`}>
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between">
@@ -894,7 +921,8 @@ export default function MLBFantasyApp() {
                             <p className="text-white font-semibold">{player.name}</p>
                             {player.isStar && <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />}
                           </div>
-                          <p className="text-white/50 text-sm">{player.team?.name} - {player.position}</p>
+                          <p className="text-white/50 text-sm">{player.team?.name || 'Sin equipo'} - {player.position}</p>
+                          {player.number && <p className="text-white/30 text-xs">#{player.number}</p>}
                         </div>
                         <Badge variant="outline" className="border-white/20 text-white">
                           {player.position}
@@ -948,7 +976,7 @@ export default function MLBFantasyApp() {
                             Fichar
                           </Button>
                         ) : (
-                          <Badge className="bg-gray-500">No disponible</Badge>
+                          <Badge className="bg-gray-500">Fichado</Badge>
                         )}
                       </div>
                     </CardContent>
@@ -963,9 +991,9 @@ export default function MLBFantasyApp() {
             <Card className="bg-white/5 border-white/10">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-white">Mi Plantilla</CardTitle>
+                  <CardTitle className="text-white">Mi Plantilla ({signings.length} jugadores)</CardTitle>
                   <div className="text-right">
-                    <p className="text-white/70 text-sm">Balance</p>
+                    <p className="text-white/70 text-sm">Balance disponible</p>
                     <p className="text-green-300 font-bold text-xl">{formatCurrency(user?.balance || 0)}</p>
                   </div>
                 </div>
@@ -980,32 +1008,70 @@ export default function MLBFantasyApp() {
                     </Button>
                   </div>
                 ) : (
-                  <ScrollArea className="h-96">
-                    <div className="space-y-2">
+                  <ScrollArea className="max-h-[600px]">
+                    <div className="grid gap-3 md:grid-cols-2">
                       {signings.map((signing) => (
-                        <div key={signing.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                          <div className="flex items-center gap-3">
-                            <div>
-                              <p className="text-white font-semibold">{signing.player.name}</p>
-                              <p className="text-white/50 text-sm">{signing.player.team?.name} - {signing.player.position}</p>
+                        <Card key={signing.id} className="bg-white/5 border-white/10">
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <p className="text-white font-semibold">{signing.player.name}</p>
+                                  {signing.player.isStar && <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />}
+                                </div>
+                                <p className="text-white/50 text-sm">{signing.player.team?.name} - {signing.player.position}</p>
+                                <p className="text-white/30 text-xs">Fichado por: {formatCurrency(signing.price)}</p>
+                              </div>
+                              <Badge variant="outline" className="border-white/20 text-white">
+                                {signing.player.position}
+                              </Badge>
                             </div>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <div className="text-right">
-                              <p className="text-green-300">{formatCurrency(signing.player.marketValue)}</p>
-                              <p className="text-white/50 text-xs">Precio compra: {formatCurrency(signing.price)}</p>
+                            <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-center">
+                              {signing.player.position !== 'P' ? (
+                                <>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">HR</p>
+                                    <p className="text-white font-bold">{signing.player.hr}</p>
+                                  </div>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">RBI</p>
+                                    <p className="text-white font-bold">{signing.player.rbi}</p>
+                                  </div>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">AVG</p>
+                                    <p className="text-white font-bold">{signing.player.avg?.toFixed(3) || '.000'}</p>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">W</p>
+                                    <p className="text-white font-bold">{signing.player.wins}</p>
+                                  </div>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">SV</p>
+                                    <p className="text-white font-bold">{signing.player.saves}</p>
+                                  </div>
+                                  <div className="bg-white/5 rounded p-1">
+                                    <p className="text-white/50">ERA</p>
+                                    <p className="text-white font-bold">{signing.player.era?.toFixed(2) || '0.00'}</p>
+                                  </div>
+                                </>
+                              )}
                             </div>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => handleSellPlayer(signing.playerId)}
-                              disabled={!league?.marketOpen}
-                            >
-                              <ArrowDownRight className="w-4 h-4 mr-1" />
-                              Vender
-                            </Button>
-                          </div>
-                        </div>
+                            <div className="mt-3 flex items-center justify-between">
+                              <p className="text-green-300 text-sm">Valor: {formatCurrency(signing.player.marketValue)}</p>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => handleSellPlayer(signing.playerId)}
+                                disabled={!league?.marketOpen}
+                              >
+                                Vender
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
                       ))}
                     </div>
                   </ScrollArea>
@@ -1020,63 +1086,170 @@ export default function MLBFantasyApp() {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div>
-                    <CardTitle className="text-white">Lineup Semanal</CardTitle>
+                    <CardTitle className="text-white">Configurar Lineup - Semana {currentWeek}</CardTitle>
                     <CardDescription className="text-white/50">
-                      Semana {currentWeek} - Selecciona {league?.lineupSize || 9} titulares
+                      Selecciona tu once ideal. El capitán obtiene el doble de puntos.
                     </CardDescription>
                   </div>
-                  <Badge className="bg-blue-500">
-                    {lineupEntries.filter(e => e.isStarter).length}/{league?.lineupSize || 9} titulares
-                  </Badge>
+                  <Button onClick={() => fetchLineupData()} variant="outline" className="border-white/20 text-white">
+                    Cargar Plantilla
+                  </Button>
                 </div>
               </CardHeader>
               <CardContent>
-                {signings.length === 0 ? (
-                  <div className="text-center py-12">
+                {signings.length < 11 ? (
+                  <div className="text-center py-8">
                     <Target className="w-16 h-16 mx-auto mb-4 text-white/30" />
-                    <p className="text-white/50">Necesitas jugadores para crear tu lineup</p>
+                    <p className="text-white/50">Necesitas al menos 11 jugadores para configurar tu lineup</p>
+                    <p className="text-white/30 text-sm mt-2">Actualmente tienes {signings.length} jugadores</p>
+                    <Button onClick={() => setActiveTab('mercado')} className="mt-4 bg-green-600 hover:bg-green-700">
+                      Ir al Mercado
+                    </Button>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    <div className="text-sm text-white/70 mb-2">
-                      <p>Posiciones: P (Pitcher), C (Catcher), 1B, 2B, 3B, SS (Shortstop), OF (Outfield), DH (Designated Hitter)</p>
-                    </div>
-                    <ScrollArea className="h-96">
-                      <div className="space-y-2">
-                        {signings.map((signing) => {
-                          const entry = lineupEntries.find(e => e.playerId === signing.playerId)
-                          const isStarter = entry?.isStarter ?? false
-                          
-                          return (
-                            <div key={signing.id} className={`flex items-center justify-between p-3 rounded-lg ${isStarter ? 'bg-green-600/20 border border-green-500/30' : 'bg-white/5'}`}>
-                              <div className="flex items-center gap-3">
-                                <Badge variant="outline" className="border-white/20 text-white">
-                                  {signing.player.position}
-                                </Badge>
-                                <div>
-                                  <p className="text-white font-semibold">{signing.player.name}</p>
-                                  <p className="text-white/50 text-sm">{signing.player.team?.name}</p>
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    {/* Available Players */}
+                    <div>
+                      <h3 className="text-white font-semibold mb-3">Tus Jugadores</h3>
+                      <ScrollArea className="h-96">
+                        <div className="space-y-2">
+                          {signings.map((s) => {
+                            const inLineup = selectedLineup.some(e => e.playerId === s.playerId)
+                            return (
+                              <div 
+                                key={s.id} 
+                                className={`p-3 rounded-lg ${inLineup ? 'bg-green-500/20 border border-green-500/30' : 'bg-white/5'}`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div>
+                                    <p className="text-white font-medium">{s.player.name}</p>
+                                    <p className="text-white/50 text-xs">{s.player.team?.shortName} - {s.player.position}</p>
+                                  </div>
+                                  {!inLineup ? (
+                                    <Select onValueChange={(pos) => handleAddToLineup(s.playerId, pos)}>
+                                      <SelectTrigger className="w-32 bg-white/10 border-white/20 text-white text-xs">
+                                        <SelectValue placeholder="Agregar" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value={s.player.position}>{s.player.position}</SelectItem>
+                                        {s.player.position !== 'P' && <SelectItem value="DH">DH</SelectItem>}
+                                      </SelectContent>
+                                    </Select>
+                                  ) : (
+                                    <div className="flex items-center gap-2">
+                                      {selectedLineup.find(e => e.playerId === s.playerId)?.isCaptain && (
+                                        <Badge className="bg-yellow-500 text-black">
+                                          <CaptainIcon className="w-3 h-3 mr-1" />
+                                          CAP
+                                        </Badge>
+                                      )}
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-red-400 hover:text-red-300"
+                                        onClick={() => handleRemoveFromLineup(s.playerId)}
+                                      >
+                                        <Ban className="w-4 h-4" />
+                                      </Button>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
-                              <div className="flex items-center gap-3">
-                                <span className="text-yellow-400 text-sm">{signing.player.totalFantasyPoints} pts</span>
-                                <Switch
-                                  checked={isStarter}
-                                  onCheckedChange={(checked) => {
-                                    const entries = signings.map(s => ({
-                                      playerId: s.playerId,
-                                      position: s.player.position,
-                                      isStarter: s.playerId === signing.playerId ? checked : lineupEntries.find(e => e.playerId === s.playerId)?.isStarter ?? false
-                                    }))
-                                    handleSaveLineup(entries)
-                                  }}
-                                />
+                            )
+                          })}
+                        </div>
+                      </ScrollArea>
+                    </div>
+
+                    {/* Lineup Selection */}
+                    <div>
+                      <h3 className="text-white font-semibold mb-3">Tu Lineup ({selectedLineup.length}/11)</h3>
+                      <div className="space-y-2">
+                        {['P', 'C', '1B', '2B', '3B', 'SS', 'OF', 'OF', 'OF', 'DH'].map((pos) => {
+                          const entry = selectedLineup.find(e => e.position === pos)
+                          const isOF = pos === 'OF'
+                          const ofCount = selectedLineup.filter(e => e.position === 'OF').length
+                          
+                          if (isOF) {
+                            const ofEntries = selectedLineup.filter(e => e.position === 'OF')
+                            const ofIndex = ofEntries.findIndex(e => !entry || e.playerId !== entry.playerId)
+                            
+                            return (
+                              <div key={`of-${ofIndex}`} className="p-3 rounded-lg bg-white/5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-white/70">OF ({ofCount}/3)</span>
+                                  {ofEntries.length > 0 && ofEntries.map((ofEntry, idx) => (
+                                    <div key={idx} className="flex items-center gap-2">
+                                      <span className="text-white">{signings.find(s => s.playerId === ofEntry.playerId)?.player.name}</span>
+                                      <div className="flex gap-1">
+                                        <Button
+                                          size="sm"
+                                          variant={ofEntry.isCaptain ? 'default' : 'outline'}
+                                          className={ofEntry.isCaptain ? 'bg-yellow-500 text-black h-6 w-6 p-0' : 'border-yellow-500/50 text-yellow-300 h-6 w-6 p-0'}
+                                          onClick={() => handleSetCaptain(ofEntry.playerId)}
+                                        >
+                                          <CaptainIcon className="w-3 h-3" />
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="text-red-400 hover:text-red-300 h-6 w-6 p-0"
+                                          onClick={() => handleRemoveFromLineup(ofEntry.playerId)}
+                                        >
+                                          <Ban className="w-3 h-3" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )
+                          }
+                          
+                          return (
+                            <div key={pos} className={`p-3 rounded-lg ${entry ? 'bg-green-500/20 border border-green-500/30' : 'bg-white/5'}`}>
+                              <div className="flex items-center justify-between">
+                                <span className="text-white/70">{getPositionName(pos)}</span>
+                                {entry ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-white">{signings.find(s => s.playerId === entry.playerId)?.player.name}</span>
+                                    <div className="flex gap-1">
+                                      <Button
+                                        size="sm"
+                                        variant={entry.isCaptain ? 'default' : 'outline'}
+                                        className={entry.isCaptain ? 'bg-yellow-500 text-black h-6 w-6 p-0' : 'border-yellow-500/50 text-yellow-300 h-6 w-6 p-0'}
+                                        onClick={() => handleSetCaptain(entry.playerId)}
+                                      >
+                                        <CaptainIcon className="w-3 h-3" />
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="text-red-400 hover:text-red-300 h-6 w-6 p-0"
+                                        onClick={() => handleRemoveFromLineup(entry.playerId)}
+                                      >
+                                        <Ban className="w-3 h-3" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <Badge variant="outline" className="border-red-500/50 text-red-300">Vacío</Badge>
+                                )}
                               </div>
                             </div>
                           )
                         })}
                       </div>
-                    </ScrollArea>
+                      
+                      <Button 
+                        onClick={handleSaveLineup}
+                        className="w-full mt-4 bg-green-600 hover:bg-green-700"
+                        disabled={selectedLineup.length !== 11 || !captainId}
+                      >
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                        Guardar Lineup
+                      </Button>
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -1089,73 +1262,87 @@ export default function MLBFantasyApp() {
               <CardHeader>
                 <CardTitle className="text-white flex items-center gap-2">
                   <Trophy className="w-5 h-5 text-yellow-400" />
-                  Clasificación
+                  Clasificación General
                 </CardTitle>
+                <CardDescription className="text-white/50">
+                  Temporada {league?.season || new Date().getFullYear()} - Semana {currentWeek}
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="h-96">
-                  <div className="space-y-2">
-                    {standings.map((s, index) => (
-                      <div 
-                        key={s.id} 
-                        className={`flex items-center justify-between p-3 rounded-lg ${
-                          s.user.id === user?.id ? 'bg-green-600/20 border border-green-500/30' : 'bg-white/5'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${
-                            index === 0 ? 'bg-yellow-500 text-black' :
-                            index === 1 ? 'bg-gray-300 text-black' :
-                            index === 2 ? 'bg-amber-600 text-black' :
-                            'bg-white/10 text-white'
-                          }`}>
-                            {index + 1}
-                          </div>
-                          <div>
-                            <p className="text-white font-semibold">{s.user.name}</p>
-                            <p className="text-white/50 text-xs">{s.user.email}</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-yellow-400 font-bold">{s.user.totalPoints.toLocaleString()} pts</p>
-                          <p className="text-green-300 text-sm">{formatCurrency(s.user.balance)}</p>
-                        </div>
-                      </div>
-                    ))}
+                {standings.length === 0 ? (
+                  <div className="text-center py-12">
+                    <Trophy className="w-16 h-16 mx-auto mb-4 text-white/30" />
+                    <p className="text-white/50">No hay clasificación disponible</p>
                   </div>
-                </ScrollArea>
+                ) : (
+                  <ScrollArea className="max-h-[500px]">
+                    <div className="space-y-2">
+                      {standings.map((s, index) => (
+                        <div 
+                          key={s.id} 
+                          className={`flex items-center justify-between p-4 rounded-lg ${
+                            index === 0 ? 'bg-yellow-500/20 border border-yellow-500/30' :
+                            index === 1 ? 'bg-gray-400/20 border border-gray-400/30' :
+                            index === 2 ? 'bg-amber-600/20 border border-amber-600/30' :
+                            'bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <span className={`text-2xl font-bold ${
+                              index === 0 ? 'text-yellow-400' :
+                              index === 1 ? 'text-gray-300' :
+                              index === 2 ? 'text-amber-500' :
+                              'text-white/50'
+                            }`}>
+                              #{s.rank}
+                            </span>
+                            <div>
+                              <p className="text-white font-semibold">{s.name}</p>
+                              <p className="text-white/50 text-xs">{s.email}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-yellow-400 font-bold text-lg">{s.totalPoints} pts</p>
+                            <p className="text-green-300 text-sm">{formatCurrency(s.balance)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
           {/* Pagos Tab */}
           <TabsContent value="pagos">
-            <div className="grid gap-4 md:grid-cols-2">
-              {/* Payment Info */}
+            <div className="space-y-6">
+              {/* Payment Instructions */}
               <Card className="bg-white/5 border-white/10">
                 <CardHeader>
-                  <CardTitle className="text-white">Información de Pago</CardTitle>
+                  <CardTitle className="text-white flex items-center gap-2">
+                    <Wallet className="w-5 h-5" />
+                    Instrucciones de Pago
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="bg-blue-600/20 border border-blue-500/30 rounded-lg p-4">
-                    <p className="text-blue-300 font-semibold mb-2">Transfermóvil</p>
-                    <div className="space-y-2 text-sm">
-                      <p className="text-white"><span className="text-white/50">Número:</span> +53 5XXX-XXXX</p>
-                      <p className="text-white"><span className="text-white/50">Concepto:</span> MLB Fantasy - {user?.email}</p>
-                      <p className="text-white"><span className="text-white/50">Monto:</span> {formatCurrency(league?.monthlyFee || 500)} CUP</p>
+                  <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                    <p className="text-blue-200 font-semibold mb-2">Transfermóvil</p>
+                    <div className="space-y-1 text-sm">
+                      <p className="text-white"><span className="text-white/50">Cuenta:</span> {TRANSFERMOVIL_INFO.accountNumber}</p>
+                      <p className="text-white"><span className="text-white/50">Beneficiario:</span> {TRANSFERMOVIL_INFO.accountHolder}</p>
+                      <p className="text-white"><span className="text-white/50">Concepto:</span> {TRANSFERMOVIL_INFO.concept}</p>
+                      <p className="text-green-300 font-bold mt-2">Monto: ${league?.monthlyFee || 500} CUP</p>
                     </div>
                   </div>
                   
-                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-                    <p className="text-yellow-300 text-sm">
-                      <AlertCircle className="w-4 h-4 inline mr-2" />
-                      Importante: Guarda el número de referencia del pago
-                    </p>
-                  </div>
-                  
-                  <Button onClick={() => setShowPaymentDialog(true)} className="w-full bg-green-600 hover:bg-green-700">
-                    <Send className="w-4 h-4 mr-2" />
-                    Registrar Pago
+                  <Button 
+                    onClick={() => setShowPaymentDialog(true)}
+                    className="w-full bg-green-600 hover:bg-green-700"
+                    disabled={user?.paymentStatus === 'paid'}
+                  >
+                    <CreditCard className="w-4 h-4 mr-2" />
+                    {user?.paymentStatus === 'paid' ? 'Pagado este mes' : 'Registrar Pago'}
                   </Button>
                 </CardContent>
               </Card>
@@ -1166,34 +1353,31 @@ export default function MLBFantasyApp() {
                   <CardTitle className="text-white">Historial de Pagos</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-64">
-                    {payments.length === 0 ? (
-                      <p className="text-white/50 text-center py-8">No hay pagos registrados</p>
-                    ) : (
+                  {payments.length === 0 ? (
+                    <p className="text-white/50 text-center py-8">No tienes pagos registrados</p>
+                  ) : (
+                    <ScrollArea className="max-h-96">
                       <div className="space-y-2">
                         {payments.map((payment) => (
                           <div key={payment.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
                             <div>
-                              <p className="text-white">{payment.month}</p>
-                              <p className="text-white/50 text-sm">{formatDate(payment.createdAt)}</p>
+                              <p className="text-white font-medium">${payment.amount} - {payment.month}</p>
+                              <p className="text-white/50 text-sm">Ref: {payment.reference || 'N/A'}</p>
+                              <p className="text-white/30 text-xs">{formatDate(payment.createdAt)}</p>
                             </div>
-                            <div className="text-right">
-                              <p className="text-green-300 font-bold">{formatCurrency(payment.amount)}</p>
-                              <Badge className={
-                                payment.status === 'verified' ? 'bg-green-500' :
-                                payment.status === 'rejected' ? 'bg-red-500' :
-                                'bg-yellow-500'
-                              }>
-                                {payment.status === 'verified' ? 'Verificado' :
-                                 payment.status === 'rejected' ? 'Rechazado' :
-                                 'Pendiente'}
-                              </Badge>
-                            </div>
+                            <Badge className={
+                              payment.status === 'verified' ? 'bg-green-500' :
+                              payment.status === 'pending' ? 'bg-yellow-500 text-black' :
+                              'bg-red-500'
+                            }>
+                              {payment.status === 'verified' ? 'Verificado' :
+                               payment.status === 'pending' ? 'Pendiente' : 'Rechazado'}
+                            </Badge>
                           </div>
                         ))}
                       </div>
-                    )}
-                  </ScrollArea>
+                    </ScrollArea>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -1203,7 +1387,7 @@ export default function MLBFantasyApp() {
 
       {/* Payment Dialog */}
       <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-        <DialogContent className="bg-gray-900 border-white/20">
+        <DialogContent className="bg-green-900 border-white/20">
           <DialogHeader>
             <DialogTitle className="text-white">Registrar Pago</DialogTitle>
             <DialogDescription className="text-white/50">
@@ -1212,25 +1396,25 @@ export default function MLBFantasyApp() {
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label className="text-white/70">Monto</Label>
+              <Label className="text-white/70">Monto (pesos)</Label>
               <Input
                 type="number"
                 value={paymentForm.amount}
-                onChange={(e) => setPaymentForm({...paymentForm, amount: parseInt(e.target.value)})}
+                onChange={(e) => setPaymentForm({...paymentForm, amount: parseInt(e.target.value) || 500})}
                 className="bg-white/10 border-white/20 text-white"
               />
             </div>
             <div>
-              <Label className="text-white/70">Número de Referencia</Label>
+              <Label className="text-white/70">Número de referencia</Label>
               <Input
                 value={paymentForm.reference}
                 onChange={(e) => setPaymentForm({...paymentForm, reference: e.target.value})}
-                placeholder="Ej: 1234567890"
+                placeholder="Ej: 123456789"
                 className="bg-white/10 border-white/20 text-white"
               />
             </div>
             <div>
-              <Label className="text-white/70">Número de Teléfono</Label>
+              <Label className="text-white/70">Número de teléfono</Label>
               <Input
                 value={paymentForm.phoneNumber}
                 onChange={(e) => setPaymentForm({...paymentForm, phoneNumber: e.target.value})}
@@ -1244,11 +1428,26 @@ export default function MLBFantasyApp() {
               Cancelar
             </Button>
             <Button onClick={handleCreatePayment} className="bg-green-600 hover:bg-green-700">
-              Registrar
+              Registrar Pago
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   )
+}
+
+// Helper function
+function getPositionName(code: string): string {
+  const names: Record<string, string> = {
+    'P': 'Pitcher',
+    'C': 'Catcher',
+    '1B': 'Primera Base',
+    '2B': 'Segunda Base',
+    '3B': 'Tercera Base',
+    'SS': 'Shortstop',
+    'OF': 'Outfielder',
+    'DH': 'Bateador Designado'
+  }
+  return names[code] || code
 }
