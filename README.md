@@ -1,39 +1,78 @@
-# ⚾ MLB Fantasy - Estilo "Mister"
+# ⚾ MLB Fantasy Cuba - Estilo "Mister"
 
-Aplicación de Fantasy MLB completa inspirada en la app "Mister". Crea tu equipo, ficha jugadores, configura tu lineup semanal y compite por la gloria.
+Aplicación completa de Fantasy Baseball estilo "Mister" con todas las funcionalidades para gestionar tu propia liga de béisbol MLB.
 
-![MLB Fantasy](https://img.shields.io/badge/MLB-Fantasy-green?style=for-the-badge)
+![MLB Fantasy](https://img.shields.io/badge/MLB-Fantasy_Cuba-green?style=for-the-badge)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=for-the-badge&logo=typescript)
+![Prisma](https://img.shields.io/badge/Prisma-ORM-2D3748?style=for-the-badge&logo=prisma)
 
-## 🌟 Características
+## 🌟 Características Principales
 
-### Sistema de Juego
-- **Mercado de Jugadores** - Compra y vende jugadores de los 30 equipos MLB
-- **Lineup Semanal** - Configura tu alineación titular (9 jugadores como en MLB real)
-- **Sistema de Puntos** - Puntos personalizados por acción (HR, RBI, Wins, Saves, etc.)
-- **Clasificación de Liga** - Compite por el primer lugar en la tabla de posiciones
-- **100 Millones de Pesos** - Cada usuario empieza con presupuesto para fichar
+### Sistema de Autenticación
+- **Solo el administrador** puede entrar con email/password (`admin@mlbfantasy.com`)
+- **Todos los demás usuarios** DEBEN autenticarse con Google OAuth
+- Primer usuario que se registra NO es admin (solo el email específico)
+
+### Sistema de Pagos con Transfermóvil
+- **500 pesos mensuales** por usuario
+- El usuario ingresa el número de referencia de Transfermóvil
+- El admin verifica/rechaza pagos manualmente
+- **Expulsión automática** a los 30 días sin pago
+
+### Mercado de Jugadores
+- Compra jugadores con tu presupuesto inicial (100 millones)
+- Vende jugadores al mercado
+- Precios basados en rendimiento real
+- Admin puede abrir/cerrar el mercado
+
+### Sistema de Lineup (Once Ideal)
+- Forma tu lineup semanal: **1 P, 1 C, 1B, 2B, 3B, SS, 3 OF, DH**
+- Designa un **capitán** que duplica puntos
+- Cambia tu lineup cada semana
+
+### Sistema de Puntos
+
+**Bateadores:**
+| Acción | Puntos |
+|--------|--------|
+| Hit (sencillo) | +1 |
+| Doble | +2 |
+| Triple | +3 |
+| Home Run | +4 |
+| RBI | +1 |
+| Run | +1 |
+| Base robada | +2 |
+| Base por bolas | +1 |
+| Ponche | -1 |
+
+**Pitchers:**
+| Acción | Puntos |
+|--------|--------|
+| Victoria | +5 |
+| Salvamento | +5 |
+| Entrada lanzada | +1 |
+| Ponche | +1 |
+| Carrera limpia | -2 |
+| Derrota | -3 |
 
 ### Panel de Administración
-- **Control del Mercado** - Abre y cierra el mercado de fichajes
-- **Configuración de Liga** - Ajusta presupuestos, límites de plantilla y reglas de puntos
-- **Verificación de Pagos** - Valida los pagos de Transfermóvil manualmente
-- **Expulsión Automática** - Usuarios sin pago son expulsados automáticamente
+- Configurar reglas de la liga
+- Abrir/cerrar mercado
+- Verificar pagos pendientes
+- Expulsar usuarios sin pago
+- Ver clasificación y estadísticas
 
-### Sistema de Pagos
-- **Transfermóvil** - Pago mensual de 500 pesos
-- **Verificación Manual** - El admin verifica cada pago
-- **Control de Acceso** - Solo usuarios pagados pueden jugar
+## 📊 Datos Incluidos
 
-### Autenticación
-- **Google OAuth** - Los usuarios entran con su cuenta de Google
-- **Admin Único** - Solo un administrador (configurado por email)
-- **Modo Desarrollo** - Login con email para pruebas
+- **30 equipos MLB** completos
+- **63+ jugadores reales** con estadísticas
+- Precios basados en rendimiento real ($500K - $30M)
+- Estadísticas: HR, RBI, AVG, ERA, W, SV, etc.
 
 ## 🚀 Instalación
 
-### Requisitos
+### Requisitos Previos
 - Node.js 18+
 - npm o bun
 
@@ -51,15 +90,14 @@ npm install
 ```
 
 3. **Configurar variables de entorno**
-
 Crea un archivo `.env` con:
 ```
-DATABASE_URL=file:./db/custom.db
-NEXTAUTH_SECRET=tu-clave-secreta-aqui
-NEXTAUTH_URL=http://localhost:3000
-GOOGLE_CLIENT_ID=tu-google-client-id
-GOOGLE_CLIENT_SECRET=tu-google-client-secret
-ADMIN_EMAIL=admin@mlbfantasy.com
+DATABASE_URL="file:./db/custom.db"
+NEXTAUTH_SECRET="tu-clave-secreta"
+NEXTAUTH_URL="http://localhost:3000"
+ADMIN_EMAIL="admin@mlbfantasy.com"
+GOOGLE_CLIENT_ID="tu-client-id-de-google"
+GOOGLE_CLIENT_SECRET="tu-client-secret-de-google"
 ```
 
 4. **Configurar base de datos**
@@ -68,12 +106,9 @@ npx prisma generate
 npx prisma db push
 ```
 
-5. **Iniciar servidor de chat** (en una terminal separada)
+5. **Cargar datos iniciales**
 ```bash
-cd mini-services/chat-service
-npm install
-npx prisma generate
-npm start
+node scripts/seed.js
 ```
 
 6. **Iniciar la aplicación**
@@ -86,98 +121,95 @@ npm run dev
 http://localhost:3000
 ```
 
-## 📋 Uso
+## 👤 Credenciales
 
 ### Administrador
-- El primer usuario con el email configurado en `ADMIN_EMAIL` se convierte en admin
-- El admin puede:
-  - Abrir/cerrar el mercado de fichajes
-  - Configurar reglas de la liga
-  - Verificar pagos de usuarios
-  - Expulsar usuarios sin pago
+- **Email:** admin@mlbfantasy.com
+- **Acceso:** Directo (sin Google)
 
-### Usuarios
-- Se autentican con Google
-- Pagan mensualidad via Transfermóvil (500 pesos)
-- Fichan jugadores del mercado
-- Configuran su lineup semanal
-- Compen en la clasificación
+### Usuarios Normales
+- **Acceso:** Solo con Google OAuth
+- **Presupuesto inicial:** 100,000,000 pesos
+- **Mensualidad:** 500 pesos
 
-## 📊 Sistema de Puntos
-
-| Acción | Puntos |
-|--------|--------|
-| Hit | 1 |
-| Home Run | 4 |
-| RBI | 1 |
-| Base Robada | 2 |
-| Victoria (Pitcher) | 5 |
-| Save | 3 |
-| Strikeout | 1 |
-
-## 🔧 Configuración de Google OAuth
+## 🔧 Configurar Google OAuth
 
 1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
 2. Crea un nuevo proyecto
-3. Habilita Google+ API
-4. Crea credenciales OAuth 2.0
-5. Añade las URLs autorizadas:
-   - `http://localhost:3000/api/auth/callback/google`
-6. Copia Client ID y Client Secret a tu `.env`
+3. Ve a "APIs & Services" > "Credentials"
+4. Crea "OAuth 2.0 Client IDs"
+5. Añade `http://localhost:3000` como origen autorizado
+6. Añade `http://localhost:3000/api/auth/callback/google` como URI de redirección
+7. Copia el Client ID y Client Secret a tu `.env`
 
 ## 📁 Estructura del Proyecto
 
 ```
 mlb-fantasy/
 ├── prisma/
-│   └── schema.prisma      # Esquema de base de datos
+│   └── schema.prisma      # Esquema de la base de datos
+├── scripts/
+│   └── seed.js            # Script de datos iniciales
 ├── src/
 │   ├── app/
 │   │   ├── api/           # APIs del backend
 │   │   │   ├── admin/     # Rutas de administración
-│   │   │   ├── auth/      # NextAuth
-│   │   │   ├── league/    # Liga y clasificación
-│   │   │   ├── lineup/    # Lineup semanal
+│   │   │   ├── auth/      # Autenticación
 │   │   │   ├── market/    # Mercado de jugadores
-│   │   │   └── payments/  # Sistema de pagos
+│   │   │   ├── lineup/    # Gestión de lineup
+│   │   │   ├── payments/  # Sistema de pagos
+│   │   │   └── league/    # Clasificación
 │   │   ├── page.tsx       # Página principal
-│   │   └── layout.tsx     # Layout
-│   ├── components/ui/     # Componentes shadcn/ui
-│   └── lib/               # Utilidades
-├── mini-services/
-│   └── chat-service/      # Servidor de chat Socket.io
-└── db/                    # Base de datos SQLite
+│   │   └── layout.tsx     # Layout de la aplicación
+│   ├── components/ui/     # Componentes de interfaz
+│   └── lib/               # Utilidades y configuración
+├── db/
+│   └── custom.db          # Base de datos SQLite
+└── package.json
 ```
 
 ## 🔌 Puertos
 
-- **3000**: Aplicación principal
-- **3003**: Servidor de chat
+- **3000**: Aplicación principal (Next.js)
 
-## 🛠️ Tecnologías
+## 📱 Funcionalidades por Rol
 
-| Tecnología | Uso |
-|------------|-----|
-| Next.js 16 | Framework |
-| TypeScript | Lenguaje |
-| Tailwind CSS | Estilos |
-| shadcn/ui | Componentes |
-| Prisma | ORM |
-| SQLite | Base de datos |
-| NextAuth.js | Autenticación |
-| Socket.io | Chat en tiempo real |
+### Administrador
+- ✅ Entrar con email/password
+- ✅ Configurar reglas de la liga
+- ✅ Abrir/cerrar mercado
+- ✅ Verificar pagos
+- ✅ Expulsar usuarios morosos
+- ✅ Ver estadísticas globales
 
-## 💳 Sistema de Pagos Transfermóvil
+### Usuario Normal
+- ✅ Entrar con Google
+- ✅ Comprar/vender jugadores
+- ✅ Configurar lineup semanal
+- ✅ Ver clasificación
+- ✅ Pagar mensualidad
+- ✅ Recibir notificaciones
 
-1. El usuario realiza la transferencia de 500 pesos
-2. En la app, registra el pago con:
-   - Número de referencia
+## 💳 Sistema de Pagos
+
+1. El usuario va a la pestaña "Pagos"
+2. Ingresa:
    - Número de teléfono
-3. El administrador verifica el pago
-4. El usuario puede seguir jugando
+   - Número de referencia de Transfermóvil
+3. El admin verifica el pago
+4. Si no paga en 30 días → expulsado automáticamente
 
-Los usuarios que no paguen son **expulsados automáticamente** y pierden su equipo y dinero.
+## ⚠️ Importante
+
+- El primer usuario NO es admin automáticamente
+- Solo el email `admin@mlbfantasy.com` tiene acceso de administrador
+- Los usuarios expulsados pierden todo su equipo y dinero
+- Los pagos deben ser verificados manualmente por el admin
+
+## 📝 Licencia
+
+Este proyecto es privado para uso del propietario.
 
 ---
 
-⭐ Si te gusta este proyecto, ¡dale una estrella!
+⭐ ¡Disfruta tu liga de Fantasy MLB Cuba! ⚾
